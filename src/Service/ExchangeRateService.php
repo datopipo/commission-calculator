@@ -26,51 +26,43 @@ class ExchangeRateService implements ExchangeRateServiceInterface
     private function loadRates(Client $client): void
     {
         try {
-            $apiKey = $_ENV['EXCHANGE_RATE_API_KEY'] ?? null;
-            $apiUrl = $_ENV['EXCHANGE_RATE_API_URL'];
-            
-            $currencies = implode(',', $this->config->getSupportedCurrencies());
+            // Try to get rates from API
+            $apiUrl = $_ENV['EXCHANGE_RATE_API_URL'] ?? 'https://api.exchangerate.host/latest';
             $response = $client->get($apiUrl, [
                 'query' => [
-                    'access_key' => $apiKey,
-                    'currencies' => $currencies
+                    'base' => 'EUR',
+                    'symbols' => implode(',', $this->config->getSupportedCurrencies())
                 ]
             ]);
             
             $data = json_decode($response->getBody()->getContents(), true);
-
-            if (!isset($data['success']) || !$data['success']) {
-                throw new RuntimeException('API request failed');
-            }
-
-            if (!isset($data['quotes']) || !is_array($data['quotes'])) {
+            
+            if (isset($data['rates']) && is_array($data['rates'])) {
+                $this->rates = $data['rates'];
+                $this->rates['EUR'] = 1.0; // Ensure EUR base rate is set
+                
+                // Cache the rates
+                if (!file_exists(dirname(self::CACHE_FILE))) {
+                    mkdir(dirname(self::CACHE_FILE), 0777, true);
+                }
+                file_put_contents(self::CACHE_FILE, json_encode(['rates' => $this->rates]));
+            } else {
                 throw new RuntimeException('Invalid API response format');
             }
-
-            $quotes = $data['quotes'];
-            $usdToEur = $quotes['USDEUR'] ?? null;
-            
-            if ($usdToEur === null) {
-                throw new RuntimeException('EUR rate not found in API response');
-            }
-
-            // Convert USD-based rates to EUR-based rates
-            foreach ($quotes as $pair => $rate) {
-                if (str_starts_with($pair, 'USD')) {
-                    $currency = substr($pair, 3);
-                    $this->rates[$currency] = $rate / $usdToEur;
+        } catch (GuzzleException|RuntimeException $e) {
+            // API failed, try to load from cache
+            if (file_exists(self::CACHE_FILE)) {
+                $cached = json_decode(file_get_contents(self::CACHE_FILE), true);
+                if (isset($cached['rates'])) {
+                    $this->rates = $cached['rates'];
+                    return;
                 }
             }
-            // Add EUR as base currency
-            $this->rates['EUR'] = 1.0;
-            // Add USD as base currency
-            $this->rates['USD'] = 1.0;
-
-            file_put_contents(self::CACHE_FILE, json_encode(['rates' => $this->rates]));
-        } catch (GuzzleException|RuntimeException) {
-            if (file_exists(self::CACHE_FILE)) {
-                $data = json_decode(file_get_contents(self::CACHE_FILE), true);
-                $this->rates = $data['rates'] ?? [];
+            
+            // If cache failed, use fixed rates from config
+            $this->rates = $this->config->getFixedRates();
+            if (empty($this->rates)) {
+                throw new RuntimeException("No exchange rates available - API failed and no cached/fixed rates found");
             }
         }
     }
@@ -89,6 +81,6 @@ class ExchangeRateService implements ExchangeRateServiceInterface
             throw new RuntimeException("Exchange rate not available for currency: $currency");
         }
 
-        return $this->rates[$currency];
+        return (float)$this->rates[$currency];
     }
 }
