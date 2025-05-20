@@ -6,6 +6,7 @@ composer.lock
 .phpunit.cache
 .DS_Store
 .idea/
-var/
+var/cache/*
+!var/cache/.gitkeep
 *.cache
 phpunit.xml 
